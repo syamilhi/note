@@ -112,19 +112,22 @@ function shortHashToDate(hashStr) {
 }
 
 function resolveYearForMonthDay(month, day) {
-  const today = new Date();
-  const currentYear = today.getFullYear();
-  const currentMonth = today.getMonth() + 1; // 1-12
-
-  // If month is significantly in the future (e.g. browsing Nov/Dec while currently in Jan/Feb within 100-day window)
-  let year = currentYear;
-  if (month > currentMonth + 2) {
-    year = currentYear - 1;
-  }
+  // Pick the year whose date falls inside [today - 350d, today + 14d].
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const FUTURE_DAYS = 14;
+  const max = new Date(today.getFullYear(), today.getMonth(), today.getDate() + FUTURE_DAYS);
+  const min = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (365 - 1 - FUTURE_DAYS));
 
   const mm = String(month).padStart(2, '0');
   const dd = String(day).padStart(2, '0');
-  return `${year}-${mm}-${dd}`;
+
+  for (const y of [today.getFullYear(), today.getFullYear() - 1, today.getFullYear() + 1]) {
+    const d = new Date(y, month - 1, day);
+    if (d.getMonth() !== month - 1 || d.getDate() !== day) continue; // invalid (e.g. Feb 29 off-leap)
+    if (d >= min && d <= max) return `${y}-${mm}-${dd}`;
+  }
+  return `${today.getFullYear()}-${mm}-${dd}`;
 }
 
 function getInitialDate() {
@@ -2531,12 +2534,12 @@ function workspaceKey(dateStr) {
   }
 
   // ==========================================
-  // Automatic 100-Day Expiration & Pruning
+  // Automatic 365-Day Rolling Pruning
   // ==========================================
   async function pruneExpiredWorkspaces() {
     const cutoffDate = getCutoffDateStr();
 
-    // 1. Purge from LocalStorage
+    // 1. Purge from LocalStorage (only daily workspaces older than 365 days)
     const keysToRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);

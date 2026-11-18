@@ -119,6 +119,8 @@ window.ActivityTracker = (() => {
 
   const ROWS_COUNT = 12;      // 12 rows of 30 days = 360 days (1 year)
   const COLS_COUNT = 30;      // 30 columns per row
+  const FUTURE_DAYS = 14;     // 14 future days (2 upcoming weeks)
+  const TODAY_COL = COLS_COUNT - 1 - FUTURE_DAYS; // Col 15 (0-indexed anchor)
 
   function buildGrid() {
     const today = new Date();
@@ -126,15 +128,20 @@ window.ActivityTracker = (() => {
 
     if (!_isExpanded) {
       // Collapsed: single row of 30 days
+      // Cols 0–14: 15 past days (-15 to -1)
+      // Col 15: Today (0)
+      // Cols 16–29: 14 future days (+1 to +14)
       for (let c = 0; c < COLS_COUNT; c++) {
-        const offsetFromToday = c - (COLS_COUNT - 2);
+        const offsetFromToday = c - TODAY_COL;
         cells.push(createCellData(today, offsetFromToday));
       }
     } else {
       // Expanded: 12 rows of 30 days (Row 0 = Recent 30 days, Row 1 = 30 days prior, ...)
+      // Maintains seamless chronological continuity across all rows:
+      // Row 0 Col 15 is Today (0); Row 1 Col 29 (-16) directly precedes Row 0 Col 0 (-15).
       for (let r = 0; r < ROWS_COUNT; r++) {
         for (let c = 0; c < COLS_COUNT; c++) {
-          const offsetFromToday = -(COLS_COUNT - 2) - (r * COLS_COUNT) + c;
+          const offsetFromToday = -TODAY_COL - (r * COLS_COUNT) + c;
           cells.push(createCellData(today, offsetFromToday));
         }
       }
@@ -207,16 +214,28 @@ window.ActivityTracker = (() => {
 
     const isToday = offsetFromToday === 0;
     const isTomorrow = offsetFromToday === 1;
+    const isFuture = offsetFromToday > 0;
     const isSelected = dateStr === _selectedDate;
 
     let label = count === 0 ? '' : `${count} note${count !== 1 ? 's' : ''}`;
+
+    // Date tooltip text
+    let dateLabel = formatDateLabel(d);
+    if (isToday) {
+      dateLabel = `Today · ${formatDateLabel(d)}`;
+    } else if (isTomorrow) {
+      dateLabel = `Tomorrow · ${formatDateLabel(d)}`;
+    } else if (isFuture) {
+      const weekday = d.toLocaleDateString(undefined, { weekday: 'short' });
+      dateLabel = `${weekday}, ${formatDateLabel(d)} (+${offsetFromToday}d)`;
+    }
 
     // Exact title override if set, otherwise default date and count
     let tip = customTitle
       ? customTitle
       : label
-      ? `${formatDateLabel(d)}  ·  ${label}`
-      : formatDateLabel(d);
+      ? `${dateLabel}  ·  ${label}`
+      : dateLabel;
 
     return {
       date: dateStr,
@@ -227,6 +246,8 @@ window.ActivityTracker = (() => {
       customTitle: customTitle || null,
       isToday,
       isTomorrow,
+      isFuture,
+      offsetFromToday,
       isSelected,
       tip,
     };
@@ -249,6 +270,7 @@ window.ActivityTracker = (() => {
       const div = document.createElement('div');
       div.className = `ac-cell ac-l${cell.level}`;
       div.dataset.date = cell.date;
+      div.dataset.offset = cell.offsetFromToday;
 
       if (cell.customColor) {
         div.classList.add(`ac-color-${cell.customColor}`);
@@ -257,6 +279,7 @@ window.ActivityTracker = (() => {
       if (cell.isToday) div.classList.add('ac-today');
       if (cell.isSelected) div.classList.add('ac-selected');
       if (cell.isTomorrow) div.classList.add('ac-tomorrow');
+      if (cell.isFuture) div.classList.add('ac-future');
 
       div.dataset.tip = cell.tip;
       _gridEl.appendChild(div);

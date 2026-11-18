@@ -1253,6 +1253,15 @@ kbd {
   background: rgba(255, 255, 255, 0.07);
 }
 
+/* Upcoming week future planning slots (Level 0 empty slots awaiting notes) */
+.ac-cell.ac-future.ac-l0 {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.ac-cell.ac-future.ac-l0:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .ac-l1 {
   background: rgba(99, 102, 241, 0.30);
 }
