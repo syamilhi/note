@@ -156,9 +156,9 @@ window.ActivityTracker = (() => {
     for (const note of notes) {
       const text = note.content || '';
       if (/\\red\b/i.test(text)) return 'red';
-      if (/\\green\b/i.test(text)) return 'green';
-      if (/\\(purple|darkpurple)\b/i.test(text)) return 'purple';
-      if (/\\(yellow|gold)\b/i.test(text)) return 'yellow';
+      if (/\\(green|grn)\b/i.test(text)) return 'green';
+      if (/\\(purple|darkpurple|purp)\b/i.test(text)) return 'purple';
+      if (/\\(yellow|gold|yel)\b/i.test(text)) return 'yellow';
     }
     return null;
   }
@@ -167,9 +167,9 @@ window.ActivityTracker = (() => {
     if (!Array.isArray(notes)) return null;
     for (const note of notes) {
       const text = (note.content || '').replace(/<[^>]+>/g, ' ');
-      const match = text.match(/\\title\s+([^\n\r<]+)/i);
-      if (match && match[1].trim()) {
-        return match[1].trim();
+      const match = text.match(/\\(title|ttl|t)\s+([^\n\r<]+)/i);
+      if (match && match[2].trim()) {
+        return match[2].trim();
       }
     }
     return null;

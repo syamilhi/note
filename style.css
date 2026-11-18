@@ -371,7 +371,7 @@ body {
 /* Interactive Checkboxes / Todo Items */
 .todo-row {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 8px;
   margin: 3px 0;
 }
@@ -388,10 +388,15 @@ body {
   display: inline-grid;
   place-content: center;
   position: relative;
-  top: 2px;
+  top: 3px;
   flex-shrink: 0;
   background: transparent;
+  user-select: none;
   transition: all var(--transition-fast);
+}
+
+.todo-checkbox:hover {
+  border-color: var(--text-secondary);
 }
 
 .todo-checkbox:checked {
@@ -409,13 +414,14 @@ body {
 }
 
 .todo-row.completed .todo-text {
-  text-decoration: line-through;
   color: var(--text-muted);
 }
 
 .todo-text {
   flex: 1;
   outline: none;
+  min-width: 1px;
+  word-break: break-word;
 }
 
 /* Resize Handle */

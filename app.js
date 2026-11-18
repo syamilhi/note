@@ -725,6 +725,21 @@ function workspaceKey(dateStr) {
       window.addEventListener('mouseup', onResizeUp);
     });
 
+    // Ensure all existing checkboxes inside note are contenteditable="false" and in sync
+    bodyEl.querySelectorAll('.todo-checkbox').forEach((cb) => {
+      cb.setAttribute('contenteditable', 'false');
+      const row = cb.closest('.todo-row');
+      if (row) {
+        if (cb.hasAttribute('checked') || cb.checked) {
+          cb.checked = true;
+          row.classList.add('completed');
+        } else {
+          cb.checked = false;
+          row.classList.remove('completed');
+        }
+      }
+    });
+
     // --- Content Changes & Input ---
     bodyEl.addEventListener('input', () => {
       checkSlashCommands(bodyEl, id);
@@ -737,6 +752,164 @@ function workspaceKey(dateStr) {
 
     bodyEl.addEventListener('keyup', () => {
       checkSlashCommands(bodyEl, id);
+    });
+
+    // Helper: test if collapsed caret is at start of element
+    function isCaretAtStartOf(range, element) {
+      if (!range.collapsed) return false;
+      try {
+        const preRange = document.createRange();
+        preRange.selectNodeContents(element);
+        preRange.setEnd(range.startContainer, range.startOffset);
+        return preRange.toString().length === 0;
+      } catch {
+        return false;
+      }
+    }
+
+    // Keyboard Navigation inside .todo-row (Enter to continue/exit, Backspace to remove)
+    bodyEl.addEventListener('keydown', (e) => {
+      // 1. Enter Key in .todo-row
+      if (e.key === 'Enter' && !e.shiftKey) {
+        const selection = window.getSelection();
+        if (!selection || !selection.rangeCount) return;
+        const range = selection.getRangeAt(0);
+
+        let container = range.startContainer;
+        if (container.nodeType === Node.TEXT_NODE) {
+          container = container.parentElement;
+        }
+        const currentRow = container ? container.closest('.todo-row') : null;
+        if (currentRow && bodyEl.contains(currentRow)) {
+          const currentText = currentRow.querySelector('.todo-text');
+          if (!currentText) return;
+
+          e.preventDefault();
+          const rawText = currentText.innerText.replace(/\n/g, '').trim();
+
+          // Case A: Current todo is EMPTY -> Exit todo list into a normal line
+          if (!rawText) {
+            const normalDiv = document.createElement('div');
+            normalDiv.innerHTML = '<br>';
+            currentRow.parentNode.replaceChild(normalDiv, currentRow);
+
+            const newRange = document.createRange();
+            newRange.setStart(normalDiv, 0);
+            newRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+
+            const noteData = state.notes.get(id);
+            if (noteData) {
+              noteData.content = bodyEl.innerHTML;
+              debounceSave();
+            }
+            return;
+          }
+
+          // Case B: Current todo has content -> Create a new todo row below
+          const afterRange = document.createRange();
+          afterRange.setStart(range.startContainer, range.startOffset);
+          afterRange.setEndAfter(currentText.lastChild || currentText);
+          const afterFragment = afterRange.extractContents();
+
+          if (!currentText.innerHTML.trim() || currentText.innerHTML === '<br>') {
+            currentText.innerHTML = '<br>';
+          }
+
+          const newRow = document.createElement('div');
+          newRow.className = 'todo-row';
+          const newCheckbox = document.createElement('input');
+          newCheckbox.type = 'checkbox';
+          newCheckbox.className = 'todo-checkbox';
+          newCheckbox.setAttribute('contenteditable', 'false');
+
+          const newTextSpan = document.createElement('span');
+          newTextSpan.className = 'todo-text';
+          if (afterFragment && afterFragment.textContent && afterFragment.textContent.trim()) {
+            newTextSpan.appendChild(afterFragment);
+          } else {
+            newTextSpan.innerHTML = '<br>';
+          }
+
+          newRow.appendChild(newCheckbox);
+          newRow.appendChild(newTextSpan);
+
+          if (currentRow.nextSibling) {
+            currentRow.parentNode.insertBefore(newRow, currentRow.nextSibling);
+          } else {
+            currentRow.parentNode.appendChild(newRow);
+          }
+
+          const newRange = document.createRange();
+          newRange.setStart(newTextSpan, 0);
+          newRange.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(newRange);
+
+          const noteData = state.notes.get(id);
+          if (noteData) {
+            noteData.content = bodyEl.innerHTML;
+            debounceSave();
+          }
+          return;
+        }
+      }
+
+      // 2. Backspace Key at start of .todo-row
+      if (e.key === 'Backspace') {
+        const selection = window.getSelection();
+        if (!selection || !selection.rangeCount) return;
+        const range = selection.getRangeAt(0);
+        if (!range.collapsed) return;
+
+        let container = range.startContainer;
+        if (container.nodeType === Node.TEXT_NODE) {
+          container = container.parentElement;
+        }
+        const currentRow = container ? container.closest('.todo-row') : null;
+        if (currentRow && bodyEl.contains(currentRow)) {
+          const currentText = currentRow.querySelector('.todo-text');
+          if (currentText && isCaretAtStartOf(range, currentText)) {
+            e.preventDefault();
+            const rawText = currentText.innerText.replace(/\n/g, '').trim();
+
+            if (!rawText) {
+              // Empty todo: remove and replace with normal line
+              const normalDiv = document.createElement('div');
+              normalDiv.innerHTML = '<br>';
+              currentRow.parentNode.replaceChild(normalDiv, currentRow);
+
+              const newRange = document.createRange();
+              newRange.setStart(normalDiv, 0);
+              newRange.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(newRange);
+            } else {
+              // Has text: unwrap todo row into normal paragraph
+              const normalDiv = document.createElement('div');
+              while (currentText.firstChild) {
+                normalDiv.appendChild(currentText.firstChild);
+              }
+              if (!normalDiv.firstChild) normalDiv.innerHTML = '<br>';
+              currentRow.parentNode.replaceChild(normalDiv, currentRow);
+
+              const newRange = document.createRange();
+              newRange.setStart(normalDiv, 0);
+              newRange.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(newRange);
+            }
+
+            const noteData = state.notes.get(id);
+            if (noteData) {
+              noteData.content = bodyEl.innerHTML;
+              debounceSave();
+            }
+            return;
+          }
+        }
+      }
     });
 
     // Checkbox toggling inside note body
@@ -793,10 +966,11 @@ function workspaceKey(dateStr) {
     const offset = range.startOffset;
     const textBefore = text.substring(0, offset);
 
-    // 1. \img command -> Direct image file picker
-    if (textBefore.endsWith('\\img') || textBefore.endsWith('\\img ')) {
-      const isSpace = textBefore.endsWith('\\img ');
-      const removeLen = isSpace ? 5 : 4;
+    // 1. \img or \image command -> Direct image file picker
+    const imageTriggers = ['\\image ', '\\image', '\\img ', '\\img'];
+    const matchedImageTrigger = imageTriggers.find((t) => textBefore.endsWith(t));
+    if (matchedImageTrigger) {
+      const removeLen = matchedImageTrigger.length;
       const newText = textBefore.substring(0, offset - removeLen) + text.substring(offset);
       node.textContent = newText;
 
@@ -818,73 +992,119 @@ function workspaceKey(dateStr) {
         imageFileInput.click();
       }
     }
-    // 2. \check command -> Insert interactive checkbox / checkmark item
-    else if (textBefore.endsWith('\\check') || textBefore.endsWith('\\check ')) {
-      const isSpace = textBefore.endsWith('\\check ');
-      const removeLen = isSpace ? 7 : 6;
-      const newText = textBefore.substring(0, offset - removeLen) + text.substring(offset);
-      node.textContent = newText;
+    // 2. \check, \chk, \todo, or [] command -> Insert interactive checkbox / checkmark item
+    else {
+      const todoTriggers = [
+        '\\check ', '\\check',
+        '\\todo ', '\\todo',
+        '\\chk ', '\\chk',
+        '- [ ] ', '[] '
+      ];
+      const matchedTodoTrigger = todoTriggers.find((t) => textBefore.endsWith(t));
+      if (matchedTodoTrigger) {
+        const removeLen = matchedTodoTrigger.length;
+        const newText = textBefore.substring(0, offset - removeLen) + text.substring(offset);
+        node.textContent = newText;
 
-      // Position caret right at the deletion point
-      const newRange = document.createRange();
-      const newOffset = Math.max(0, offset - removeLen);
-      newRange.setStart(node, Math.min(newOffset, node.textContent.length));
-      newRange.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(newRange);
+        // Position caret right at the deletion point
+        const newRange = document.createRange();
+        const newOffset = Math.max(0, offset - removeLen);
+        newRange.setStart(node, Math.min(newOffset, node.textContent.length));
+        newRange.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(newRange);
 
-      insertTodoItemAtSelection();
+        insertTodoItemAtSelection();
 
-      const noteData = state.notes.get(id);
-      if (noteData) {
-        noteData.content = bodyEl.innerHTML;
-        debounceSave();
+        const noteData = state.notes.get(id);
+        if (noteData) {
+          noteData.content = bodyEl.innerHTML;
+          debounceSave();
+        }
       }
     }
   }
 
-  async function processAndInsertImage(file, noteId) {
+  async function processAndInsertImage(file, noteId, spawnScreenPos = null) {
     if (!file || !file.type.startsWith('image/')) return;
 
-    const targetId = noteId || targetImageNoteId || state.activeNoteId;
-    if (!targetId) return;
+    // Consume and immediately clear targetImageNoteId so future pastes aren't hijacked
+    const savedPickerTargetId = targetImageNoteId;
+    targetImageNoteId = null;
 
-    const noteEl = document.getElementById(targetId);
-    if (!noteEl) return;
+    let targetId = noteId || savedPickerTargetId || state.activeNoteId;
+    let noteEl = targetId ? document.getElementById(targetId) : null;
+
+    // If no active note exists (e.g. pasting/dropping directly onto canvas), auto-spawn one
+    if (!noteEl) {
+      const screenPos = spawnScreenPos || lastMousePos || {
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      };
+      const worldPos = screenToWorld(screenPos.x, screenPos.y);
+      const created = createNote(Math.round(worldPos.x), Math.round(worldPos.y));
+      targetId = created.id;
+      noteEl = document.getElementById(targetId);
+      if (!noteEl) return;
+    }
 
     const bodyEl = noteEl.querySelector('.note-body');
     bodyEl.focus();
 
-    // 1. Create immediate local object URL for instant thumbnail preview
-    const previewUrl = URL.createObjectURL(file);
+    // 1. Create immediate local object URL for 0ms visual preview
+    let previewUrl = URL.createObjectURL(file);
+    const revokePreview = () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+      }
+    };
 
     const imgEl = document.createElement('img');
     imgEl.src = previewUrl;
     imgEl.alt = 'Note Image';
     imgEl.className = 'note-img uploading';
 
-    // Insert at caret if saved range exists, or append to note
+    // Insert at caret if saved range exists in this note, or append to note
     if (targetImageRange && bodyEl.contains(targetImageRange.commonAncestorContainer)) {
       targetImageRange.insertNode(imgEl);
       const p = document.createElement('p');
       p.innerHTML = '<br>';
       imgEl.after(p);
-      targetImageRange = null;
     } else {
       bodyEl.appendChild(imgEl);
       const p = document.createElement('p');
       p.innerHTML = '<br>';
       bodyEl.appendChild(p);
     }
+    targetImageRange = null;
 
-    // 2. Upload to Cloudinary in background
+    // 2. Concurrently generate a compressed Base64 data URL so storage is never stuck with a dead blob: URL
+    let cloudinaryResolved = false;
+    const localCompressionPromise = compressImageToDataUrl(file)
+      .then((dataUrl) => {
+        if (!cloudinaryResolved && dataUrl) {
+          imgEl.src = dataUrl;
+          revokePreview();
+          const noteData = state.notes.get(targetId);
+          if (noteData) {
+            noteData.content = bodyEl.innerHTML;
+            debounceSave();
+          }
+        }
+        return dataUrl;
+      })
+      .catch(() => null);
+
+    // 3. Upload to Cloudinary in background
     try {
       if (typeof uploadToCloudinary === 'function') {
         const uploadResult = await uploadToCloudinary(file);
         if (uploadResult && uploadResult.url) {
+          cloudinaryResolved = true;
           imgEl.src = uploadResult.url;
           imgEl.classList.remove('uploading');
-          URL.revokeObjectURL(previewUrl);
+          revokePreview();
 
           const noteData = state.notes.get(targetId);
           if (noteData) {
@@ -897,66 +1117,82 @@ function workspaceKey(dateStr) {
       throw new Error('Cloudinary upload function not available');
     } catch (err) {
       console.warn('Cloudinary upload failed, falling back to local compressed image:', err);
-      compressAndFallbackImage(file, imgEl, previewUrl, targetId, bodyEl);
+      const fallbackDataUrl = await localCompressionPromise;
+      if (fallbackDataUrl) {
+        imgEl.src = fallbackDataUrl;
+      }
+      imgEl.classList.remove('uploading');
+      revokePreview();
+
+      const noteData = state.notes.get(targetId);
+      if (noteData) {
+        noteData.content = bodyEl.innerHTML;
+        debounceSave();
+      }
     }
   }
 
-  function compressAndFallbackImage(file, imgEl, previewUrl, targetId, bodyEl) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const rawDataUrl = e.target.result;
-      const img = new Image();
-      img.onload = () => {
-        const maxDim = 2048;
-        let width = img.width;
-        let height = img.height;
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
+  function compressImageToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('FileReader failed'));
+      reader.onload = (e) => {
+        const rawDataUrl = e.target.result;
+        if (file.type === 'image/gif') {
+          resolve(rawDataUrl);
+          return;
+        }
+        const img = new Image();
+        img.onerror = () => resolve(rawDataUrl);
+        img.onload = () => {
+          const maxDim = 2048;
+          let width = img.width;
+          let height = img.height;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
           }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
 
-        const finalDataUrl = (file.type === 'image/gif')
-          ? rawDataUrl
-          : (file.type === 'image/png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/webp', 0.85));
-
-        imgEl.src = finalDataUrl;
-        imgEl.classList.remove('uploading');
-        URL.revokeObjectURL(previewUrl);
-
-        const noteData = state.notes.get(targetId);
-        if (noteData) {
-          noteData.content = bodyEl.innerHTML;
-          debounceSave();
-        }
+          const finalDataUrl =
+            file.type === 'image/png'
+              ? canvas.toDataURL('image/png')
+              : canvas.toDataURL('image/webp', 0.85);
+          resolve(finalDataUrl);
+        };
+        img.src = rawDataUrl;
       };
-      img.src = rawDataUrl;
-    };
-    reader.readAsDataURL(file);
+      reader.readAsDataURL(file);
+    });
   }
 
   function insertTodoItemAtSelection() {
-    const todoHtml = `<div class="todo-row"><input type="checkbox" class="todo-checkbox"><span class="todo-text"></span></div>`;
+    const markerId = 'todo-new-' + Date.now();
+    const todoHtml = `<div class="todo-row" id="${markerId}"><input type="checkbox" class="todo-checkbox" contenteditable="false"><span class="todo-text"><br></span></div>`;
     document.execCommand('insertHTML', false, todoHtml);
 
-    // Focus inside newly inserted todo-text span
-    const selection = window.getSelection();
-    if (selection.rangeCount > 0) {
-      const parent = selection.anchorNode.parentElement;
-      const todoText = parent.querySelector('.todo-text') || (parent.classList.contains('todo-text') ? parent : null);
+    let newRow = document.getElementById(markerId);
+    if (!newRow) {
+      const allRows = document.querySelectorAll('.todo-row');
+      if (allRows.length > 0) newRow = allRows[allRows.length - 1];
+    }
+    if (newRow) {
+      newRow.removeAttribute('id');
+      const todoText = newRow.querySelector('.todo-text');
       if (todoText) {
         const range = document.createRange();
         range.selectNodeContents(todoText);
-        range.collapse(false);
+        range.collapse(true);
+        const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
       }
@@ -2123,6 +2359,20 @@ function workspaceKey(dateStr) {
     const temp = document.createElement('div');
     temp.innerHTML = rawHtml;
     unwrapEmptySpans(temp);
+    // Normalize bloated <br> inside empty todo-text spans (fixes <span class="todo-text"><br><br><br></span>)
+    temp.querySelectorAll('.todo-text').forEach((el) => {
+      if (!el.textContent.trim()) {
+        el.innerHTML = '<br>';
+      }
+    });
+    // Strip transient uploading state or ephemeral blob: URLs before persisting to storage
+    temp.querySelectorAll('img').forEach((img) => {
+      img.classList.remove('uploading');
+      const src = img.getAttribute('src') || '';
+      if (src.startsWith('blob:')) {
+        img.remove();
+      }
+    });
     temp.normalize();
     return temp.innerHTML;
   }
@@ -2247,15 +2497,15 @@ function workspaceKey(dateStr) {
           const txt = n.content || '';
           if (!detectedColor) {
             if (/\\red\b/i.test(txt)) detectedColor = 'red';
-            else if (/\\green\b/i.test(txt)) detectedColor = 'green';
-            else if (/\\(purple|darkpurple)\b/i.test(txt)) detectedColor = 'purple';
-            else if (/\\(yellow|gold)\b/i.test(txt)) detectedColor = 'yellow';
+            else if (/\\(green|grn)\b/i.test(txt)) detectedColor = 'green';
+            else if (/\\(purple|darkpurple|purp)\b/i.test(txt)) detectedColor = 'purple';
+            else if (/\\(yellow|gold|yel)\b/i.test(txt)) detectedColor = 'yellow';
           }
           if (!detectedTitle) {
             const clean = txt.replace(/<[^>]+>/g, ' ');
-            const match = clean.match(/\\title\s+([^\n\r<]+)/i);
-            if (match && match[1].trim()) {
-              detectedTitle = match[1].trim();
+            const match = clean.match(/\\(title|ttl|t)\s+([^\n\r<]+)/i);
+            if (match && match[2].trim()) {
+              detectedTitle = match[2].trim();
             }
           }
         }
@@ -2775,7 +3025,7 @@ function workspaceKey(dateStr) {
   }
 
   // ==========================================
-  // Image Events (Direct File Picker & Paste)
+  // Image Events (Direct File Picker, Paste & Drag-Drop)
   // ==========================================
   if (imageFileInput) {
     imageFileInput.addEventListener('change', (e) => {
@@ -2784,9 +3034,13 @@ function workspaceKey(dateStr) {
         imageFileInput.value = '';
       }
     });
+    imageFileInput.addEventListener('cancel', () => {
+      targetImageNoteId = null;
+      targetImageRange = null;
+    });
   }
 
-  // Paste image handler (supports pasting directly into canvas/note)
+  // Paste image handler (supports pasting directly into focused note or spawning a new note on canvas)
   window.addEventListener('paste', (e) => {
     const items = (e.clipboardData || window.clipboardData)?.items;
     if (!items) return;
@@ -2795,11 +3049,44 @@ function workspaceKey(dateStr) {
         const file = items[i].getAsFile();
         if (file) {
           e.preventDefault();
-          processAndInsertImage(file, targetImageNoteId || state.activeNoteId);
+          targetImageNoteId = null;
+          targetImageRange = null;
+          processAndInsertImage(file, state.activeNoteId);
           break;
         }
       }
     }
+  });
+
+  // Desktop drag-and-drop image handler (into an existing note card or onto empty canvas)
+  window.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+      e.preventDefault();
+    }
+  });
+
+  window.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    const imageFiles = Array.from(files).filter((f) => f.type && f.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+
+    e.preventDefault();
+    targetImageNoteId = null;
+    targetImageRange = null;
+
+    const droppedOnNote = e.target.closest ? e.target.closest('.note-card') : null;
+    imageFiles.forEach((file, idx) => {
+      if (droppedOnNote) {
+        processAndInsertImage(file, droppedOnNote.id);
+      } else {
+        processAndInsertImage(file, null, {
+          x: e.clientX + idx * 24,
+          y: e.clientY + idx * 24,
+        });
+      }
+    });
   });
 
   // Tool Dock Buttons
@@ -2909,15 +3196,15 @@ function workspaceKey(dateStr) {
                     const txt = n.content || '';
                     if (!colorsMap[dateKey]) {
                       if (/\\red\b/i.test(txt)) colorsMap[dateKey] = 'red';
-                      else if (/\\green\b/i.test(txt)) colorsMap[dateKey] = 'green';
-                      else if (/\\(purple|darkpurple)\b/i.test(txt)) colorsMap[dateKey] = 'purple';
-                      else if (/\\(yellow|gold)\b/i.test(txt)) colorsMap[dateKey] = 'yellow';
+                      else if (/\\(green|grn)\b/i.test(txt)) colorsMap[dateKey] = 'green';
+                      else if (/\\(purple|darkpurple|purp)\b/i.test(txt)) colorsMap[dateKey] = 'purple';
+                      else if (/\\(yellow|gold|yel)\b/i.test(txt)) colorsMap[dateKey] = 'yellow';
                     }
                     if (!titlesMap[dateKey]) {
                       const clean = txt.replace(/<[^>]+>/g, ' ');
-                      const match = clean.match(/\\title\s+([^\n\r<]+)/i);
-                      if (match && match[1].trim()) {
-                        titlesMap[dateKey] = match[1].trim();
+                      const match = clean.match(/\\(title|ttl|t)\s+([^\n\r<]+)/i);
+                      if (match && match[2].trim()) {
+                        titlesMap[dateKey] = match[2].trim();
                       }
                     }
                   }
