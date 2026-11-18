@@ -195,10 +195,38 @@ function workspaceKey(dateStr) {
   let saveDebounceTimer = null;
   let cloudSaveDebounceTimer = null;
   let isHydratingFromCloud = false;
-  let _activeCloudListener = null; // Unsubscribe handle for the live onValue listener
+  let _activeCloudListener = null; // Unsubscribe handle for the live onValue workspace listener
+  let _activeBoardsListener = null; // Unsubscribe handle for the live onValue custom_boards listener
   let lastContentSignature = '';
   let pendingCloudPayload = null;
   let pendingCloudDate = null;
+
+  function safeSetLocalStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (err) {
+      try {
+        const dateKeys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k !== key && k.startsWith('customnote_workspace_')) {
+            const datePart = k.replace('customnote_workspace_', '');
+            if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+              dateKeys.push(k);
+            }
+          }
+        }
+        dateKeys.sort();
+        const removeCount = Math.max(1, Math.ceil(dateKeys.length * 0.2));
+        for (let i = 0; i < removeCount && i < dateKeys.length; i++) {
+          localStorage.removeItem(dateKeys[i]);
+        }
+        localStorage.setItem(key, value);
+      } catch (retryErr) {
+        console.warn('LocalStorage write failed (quota full):', retryErr);
+      }
+    }
+  }
 
   // ==========================================
   // Coordinate Transformations
@@ -465,6 +493,7 @@ function workspaceKey(dateStr) {
       noteEl.remove();
     }
     state.notes.delete(id);
+    state.selectedNoteIds.delete(id);
     if (state.activeNoteId === id) state.activeNoteId = null;
     if (state.selectedNoteId === id) state.selectedNoteId = null;
     hideFloatingFormatBar();
@@ -2204,7 +2233,7 @@ function workspaceKey(dateStr) {
     };
 
     // 1. Instant local write
-    localStorage.setItem(workspaceKey(targetDate), JSON.stringify(workspaceData));
+    safeSetLocalStorage(workspaceKey(targetDate), JSON.stringify(workspaceData));
 
     // 2. Keep Activity Tracker heatmap synced
     if (window.ActivityTracker) {
@@ -2301,25 +2330,83 @@ function workspaceKey(dateStr) {
           });
         }
       } catch {}
-    }
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('customnote_workspace_')) {
-        const id = key.replace('customnote_workspace_', '');
-        if (id && !/^\d{4}-\d{2}-\d{2}$/.test(id)) {
-          state.customBoards.add(id.toLowerCase());
+    } else {
+      // Fallback migration only when STORAGE_KEY_CUSTOM_BOARDS has never been initialized
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('customnote_workspace_')) {
+          const id = key.replace('customnote_workspace_', '');
+          if (id && !/^\d{4}-\d{2}-\d{2}$/.test(id)) {
+            state.customBoards.add(id.toLowerCase());
+          }
         }
       }
     }
   }
 
-  function saveCustomBoards() {
+  function saveCustomBoards(syncToCloud = true) {
     const arr = Array.from(state.customBoards);
-    localStorage.setItem(STORAGE_KEY_CUSTOM_BOARDS, JSON.stringify(arr));
-    if (state.currentUser) {
+    safeSetLocalStorage(STORAGE_KEY_CUSTOM_BOARDS, JSON.stringify(arr));
+    if (syncToCloud && state.currentUser) {
       const uid = state.currentUser.uid;
       const refBoards = ref(database, `users/${uid}/custom_boards`);
-      set(refBoards, arr).catch((err) => console.error('Save custom boards error:', err));
+      // Store false when empty so Firebase RTDB keeps the node instead of deleting [] as null
+      const cloudVal = arr.length > 0 ? arr : false;
+      set(refBoards, cloudVal).catch((err) => console.error('Save custom boards error:', err));
+    }
+  }
+
+  function parseCloudCustomBoards(val) {
+    if (Array.isArray(val)) {
+      return val
+        .filter((b) => typeof b === 'string' && b.trim())
+        .map((b) => b.trim().toLowerCase());
+    }
+    return [];
+  }
+
+  function reconcileCustomBoardsFromCloud(cloudBoardsList) {
+    const cloudSet = new Set(cloudBoardsList);
+
+    // Purge local workspace caches for any custom board removed in the cloud
+    const localBoardsToRemove = new Set();
+    state.customBoards.forEach((b) => {
+      if (!cloudSet.has(b)) localBoardsToRemove.add(b);
+    });
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('customnote_workspace_')) {
+        const id = key.replace('customnote_workspace_', '').toLowerCase();
+        if (id && !/^\d{4}-\d{2}-\d{2}$/.test(id) && !cloudSet.has(id)) {
+          localBoardsToRemove.add(id);
+        }
+      }
+    }
+
+    localBoardsToRemove.forEach((removedBoard) => {
+      if (pendingCloudDate === removedBoard) {
+        clearTimeout(cloudSaveDebounceTimer);
+        cloudSaveDebounceTimer = null;
+        pendingCloudPayload = null;
+        pendingCloudDate = null;
+      }
+      localStorage.removeItem(workspaceKey(removedBoard));
+    });
+
+    state.customBoards = cloudSet;
+    saveCustomBoards(false);
+    renderCustomBoardsList();
+
+    // If currently viewing a custom board that was deleted remotely, navigate to today
+    const activeIsCustomBoard = state.activeDate && !/^\d{4}-\d{2}-\d{2}$/.test(state.activeDate);
+    if (activeIsCustomBoard && !state.customBoards.has(state.activeDate)) {
+      clearTimeout(saveDebounceTimer);
+      saveDebounceTimer = null;
+      if (_activeCloudListener) {
+        _activeCloudListener();
+        _activeCloudListener = null;
+      }
+      switchToDate(getTodayStr(), true, true);
     }
   }
 
@@ -2396,6 +2483,10 @@ function workspaceKey(dateStr) {
       cloudSaveDebounceTimer = null;
       pendingCloudPayload = null;
       pendingCloudDate = null;
+    }
+    if (state.activeDate === name && _activeCloudListener) {
+      _activeCloudListener();
+      _activeCloudListener = null;
     }
 
     // Step 2: Remove from in-memory set and persist the updated boards list.
@@ -2608,28 +2699,32 @@ function workspaceKey(dateStr) {
             drawings: cloudData.drawings || [],
             updatedAt: cloudTime,
           };
-          localStorage.setItem(workspaceKey(dateStr), JSON.stringify(mergedLocal));
+          safeSetLocalStorage(workspaceKey(dateStr), JSON.stringify(mergedLocal));
 
           if (state.activeDate === dateStr) {
-            isHydratingFromCloud = true;
-            applyWorkspaceData(mergedLocal);
-            // Mark content signature in sync with cloud data
-            lastContentSignature = JSON.stringify({
+            const incomingSignature = JSON.stringify({
               notes: mergedLocal.notes,
               drawings: mergedLocal.drawings,
             });
-            updateTransform();
-            // Clear any timer that might have been queued by DOM events
-            clearTimeout(saveDebounceTimer);
-            saveDebounceTimer = null;
-            isHydratingFromCloud = false;
+            if (incomingSignature !== lastContentSignature) {
+              isHydratingFromCloud = true;
+              applyWorkspaceData(mergedLocal);
+              // Mark content signature in sync with cloud data
+              lastContentSignature = incomingSignature;
+              updateTransform();
+              // Clear any timer that might have been queued by DOM events
+              clearTimeout(saveDebounceTimer);
+              saveDebounceTimer = null;
+              isHydratingFromCloud = false;
+            }
           }
           window.ActivityTracker?.refresh();
           updateSyncStatus('synced');
         }
       } else {
-        // Cloud has nothing yet for this date — if local has notes, push them up
-        if (state.notes.size > 0 && state.activeDate === dateStr) {
+        // Cloud has nothing yet for this date — if local has notes on a daily canvas, push them up
+        const isDateCanvas = /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+        if (isDateCanvas && state.notes.size > 0 && state.activeDate === dateStr) {
           saveToStorage(dateStr, true);
         }
       }
@@ -2758,10 +2853,42 @@ function workspaceKey(dateStr) {
       if (user) {
         updateSyncStatus('syncing');
         try {
-          // 1. Fetch all user workspaces from cloud to hydrate local storage & activity strip
+          // 1. Fetch all user workspaces & custom boards from cloud
           const workspacesRef = ref(database, `users/${user.uid}/workspaces`);
-          const snap = await get(workspacesRef);
+          const customBoardsRef = ref(database, `users/${user.uid}/custom_boards`);
+          const [snap, customBoardsSnap] = await Promise.all([
+            get(workspacesRef),
+            get(customBoardsRef),
+          ]);
 
+          // 1.1 Reconcile custom boards (server-authoritative to prevent zombie board resurrection)
+          try {
+            if (customBoardsSnap.exists()) {
+              reconcileCustomBoardsFromCloud(parseCloudCustomBoards(customBoardsSnap.val()));
+            } else if (snap.exists()) {
+              const survivingBoards = Object.keys(snap.val() || {})
+                .filter((k) => !/^\d{4}-\d{2}-\d{2}$/.test(k))
+                .map((k) => k.trim().toLowerCase());
+              reconcileCustomBoardsFromCloud(survivingBoards);
+              saveCustomBoards(true);
+            } else if (state.customBoards.size > 0) {
+              saveCustomBoards(true);
+            }
+
+            if (_activeBoardsListener) {
+              _activeBoardsListener();
+              _activeBoardsListener = null;
+            }
+            _activeBoardsListener = onValue(customBoardsRef, (cbSnap) => {
+              if (cbSnap.exists()) {
+                reconcileCustomBoardsFromCloud(parseCloudCustomBoards(cbSnap.val()));
+              }
+            });
+          } catch (cbErr) {
+            console.error('Custom boards cloud hydration error:', cbErr);
+          }
+
+          // 1.2 Hydrate workspaces & activity strip
           if (snap.exists()) {
             const allWorkspaces = snap.val();
             const countsMap = {};
@@ -2769,7 +2896,11 @@ function workspaceKey(dateStr) {
             const titlesMap = {};
             for (const [dateKey, ws] of Object.entries(allWorkspaces)) {
               if (ws && typeof ws === 'object') {
-                if (/^\d{4}-\d{2}-\d{2}$/.test(dateKey) && Array.isArray(ws.notes)) {
+                const isDateKey = /^\d{4}-\d{2}-\d{2}$/.test(dateKey);
+                if (!isDateKey && !state.customBoards.has(dateKey.toLowerCase())) {
+                  continue;
+                }
+                if (isDateKey && Array.isArray(ws.notes)) {
                   countsMap[dateKey] = ws.notes.length;
                   for (const n of ws.notes) {
                     const txt = n.content || '';
@@ -2803,33 +2934,13 @@ function workspaceKey(dateStr) {
                     drawings: ws.drawings || [],
                     updatedAt: cloudTime,
                   };
-                  localStorage.setItem(workspaceKey(dateKey), JSON.stringify(mergedLocal));
+                  safeSetLocalStorage(workspaceKey(dateKey), JSON.stringify(mergedLocal));
                 }
               }
             }
             window.ActivityTracker?.setActivityCounts(countsMap);
             window.ActivityTracker?.setActivityColors(colorsMap);
             window.ActivityTracker?.setActivityTitles(titlesMap);
-          }
-
-          // 1.5 Fetch custom boards list from cloud
-          try {
-            const customBoardsRef = ref(database, `users/${user.uid}/custom_boards`);
-            const customBoardsSnap = await get(customBoardsRef);
-            if (customBoardsSnap.exists()) {
-              const list = customBoardsSnap.val();
-              if (Array.isArray(list)) {
-                list.forEach((b) => {
-                  if (typeof b === 'string' && b.trim()) {
-                    state.customBoards.add(b.trim().toLowerCase());
-                  }
-                });
-                saveCustomBoards();
-                renderCustomBoardsList();
-              }
-            }
-          } catch (cbErr) {
-            console.error('Custom boards cloud hydration error:', cbErr);
           }
 
           // 2. Refresh activity strip and attach real-time live listener for active date
@@ -2861,10 +2972,14 @@ function workspaceKey(dateStr) {
           updateSyncStatus('error');
         }
       } else {
-        // Signed out — detach live listener
+        // Signed out — detach live listeners
         if (_activeCloudListener) {
           _activeCloudListener();
           _activeCloudListener = null;
+        }
+        if (_activeBoardsListener) {
+          _activeBoardsListener();
+          _activeBoardsListener = null;
         }
         updateSyncStatus('offline');
       }
